@@ -1,59 +1,39 @@
-import React, { MutableRefObject } from "react";
-import { isInView } from "./utils";
+import React, {
+  MutableRefObject,
+  useRef,
+  useState,
+  useEffect,
+  useCallback,
+} from "react";
+import { isInView } from "./utils/is-in-view";
+import { usePrevious } from "./utils/use-previous";
 import IVirtualScrollProps from "./virtual-scroll-props";
-import IVirtualScrollState from "./virtual-scroll-state";
 
-class VirtualScroll extends React.Component<
-  IVirtualScrollProps,
-  IVirtualScrollState
-> {
-  private lastScrollTop: number;
-  private listRef: HTMLDivElement | null;
+const VirtualScroll = ({
+  offset: initOffset = 0,
+  buffer = 10,
+  totalLength,
+  length = 40,
+  minItemHeight,
+  renderItem,
+  forwardRef,
+  ...rest
+}: IVirtualScrollProps) => {
+  const lastScrollTop = useRef<number>(0);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const [offset, setOffset] = useState<number>(initOffset || 0);
+  const prevOffset = usePrevious(offset);
+  const [init, setInit] = useState<boolean>(false);
+  const { onScroll } = rest;
 
-  constructor(props: IVirtualScrollProps) {
-    super(props);
-
-    this.state = {
-      offset: props.offset || 0,
-      init: false,
-    };
-
-    this.lastScrollTop = 0;
-    this.listRef = null;
-  }
-
-  static defaultProps = {
-    buffer: 10,
-    length: 40,
-    offset: 0,
-  };
-
-  componentDidMount() {
-    window.requestAnimationFrame(() => {
-      if (this.listRef) {
-        const { minItemHeight } = this.props;
-        this.listRef.scrollTop = this.state.offset * minItemHeight;
-      }
-    });
-  }
-
-  componentDidUpdate(
-    _prevProps: IVirtualScrollProps,
-    prevState: IVirtualScrollState
-  ) {
-    if (prevState.offset > this.state.offset) {
-      this.updateOffset(prevState);
-    }
-  }
-
-  updateOffset(prevState: IVirtualScrollState) {
-    const offsetDiff = prevState.offset - this.state.offset;
-    if (this.listRef) {
-      const el = this.listRef;
+  const updateOffset = useCallback(() => {
+    const offsetDiff = prevOffset - offset;
+    if (listRef.current) {
+      const el = listRef.current;
       const items = el.querySelectorAll(".VS-item");
 
-      let currOffset = prevState.offset;
-      const start = Math.min(this.state.offset, this.props.buffer || 0);
+      let currOffset = prevOffset;
+      const start = Math.min(offset, buffer || 0);
       const end = start + offsetDiff;
       for (let i = Math.min(items.length, end) - 1; i >= start; i--) {
         const inView = isInView(el, items[i] as HTMLElement);
@@ -69,21 +49,15 @@ class VirtualScroll extends React.Component<
         currOffset -= diff;
       }
 
-      this.setState({
-        offset: currOffset,
-      });
+      setOffset(currOffset);
     }
-  }
+  }, [buffer, offset, prevOffset]);
 
-  onScrollHandler(event: React.UIEvent<HTMLDivElement>) {
-    if (this.listRef) {
-      const { totalLength, length = 0, buffer = 0 } = this.props;
-
-      const { offset } = this.state;
-
-      const el = this.listRef;
+  const onScrollHandler = (event: React.UIEvent<HTMLDivElement>) => {
+    if (listRef.current) {
+      const el = listRef.current;
       const { scrollTop } = el;
-      const direction = Math.floor(scrollTop - this.lastScrollTop);
+      const direction = Math.floor(scrollTop - (lastScrollTop.current || 0));
 
       if (direction === 0) return;
 
@@ -105,39 +79,30 @@ class VirtualScroll extends React.Component<
           }
           if (heightAdded < direction) {
             const heightLeft = direction - heightAdded;
-            const offsetToBeAdded = Math.floor(
-              heightLeft / this.props.minItemHeight
-            );
+            const offsetToBeAdded = Math.floor(heightLeft / minItemHeight);
             newOffset += offsetToBeAdded;
-            heightAdded += offsetToBeAdded * this.props.minItemHeight;
+            heightAdded += offsetToBeAdded * minItemHeight;
           }
 
-          this.setState({
-            offset: Math.min(newOffset, totalLength - length),
-          });
+          setOffset(Math.min(newOffset, totalLength - length));
         }
       } else {
         const scrollDiff =
           items[start].getBoundingClientRect().y - el.getBoundingClientRect().y;
         if (scrollDiff > 0) {
-          const offsetDiff =
-            Math.floor(scrollDiff / this.props.minItemHeight) || 1;
+          const offsetDiff = Math.floor(scrollDiff / minItemHeight) || 1;
           const newOffset = offset - offsetDiff;
-          this.setState({
-            offset: Math.max(0, newOffset),
-          });
+          setOffset(Math.max(0, newOffset));
         }
       }
 
-      this.lastScrollTop = scrollTop;
+      lastScrollTop.current = scrollTop;
     }
 
-    if (this.props.onScroll) this.props.onScroll(event);
-  }
+    if (onScroll) onScroll(event);
+  };
 
-  renderItems(start: number, end: number) {
-    const { renderItem } = this.props;
-
+  const renderItems = (start: number, end: number) => {
     return Array.from({ length: end - start + 1 }, (_, index) => {
       const rowIndex = start + index;
       const component: React.ReactElement<any, any> = renderItem(
@@ -148,60 +113,59 @@ class VirtualScroll extends React.Component<
         className: ["VS-item", component.props.className].join(" ").trim(),
       });
     });
-  }
+  };
 
-  render() {
-    const {
-      totalLength,
-      length = 0,
-      buffer = 0,
-      offset: _offset,
-      minItemHeight,
-      renderItem,
-      forwardRef,
-      ...rest
-    } = this.props;
+  useEffect(() => {
+    if (prevOffset > offset) {
+      updateOffset();
+    }
+  }, [prevOffset, offset, updateOffset]);
 
-    const { init, offset } = this.state;
+  useEffect(() => {
+    window.requestAnimationFrame(() => {
+      if (listRef.current) {
+        listRef.current.scrollTop = offset * minItemHeight;
+      }
+    });
+  }, []);
 
-    const start = Math.max(0, offset - buffer);
-    const end = Math.min(offset + (length + buffer) - 1, totalLength - 1);
+  const start = Math.max(0, offset - buffer);
+  const end = Math.min(offset + (length + buffer) - 1, totalLength - 1);
 
-    const topPadding = Math.max(0, start * minItemHeight);
-    const bottomPadding = Math.max(0, (totalLength - end - 1) * minItemHeight);
+  const topPadding = Math.max(0, start * minItemHeight);
+  const bottomPadding = Math.max(0, (totalLength - end - 1) * minItemHeight);
 
-    return (
-      <div
-        {...rest}
-        ref={(el) => {
-          this.listRef = el;
-          if (forwardRef)
-            (forwardRef as MutableRefObject<HTMLDivElement>).current = el!;
-          if (!init) this.setState({ init: true });
-        }}
-        onScroll={this.onScrollHandler.bind(this)}
-      >
-        {init && (
-          <>
-            <div
-              style={{
-                flexShrink: 0,
-                height: topPadding,
-              }}
-            />
-            {this.renderItems(start, end)}
-            <div
-              style={{
-                flexShrink: 0,
-                height: bottomPadding,
-              }}
-            />
-          </>
-        )}
-      </div>
-    );
-  }
-}
+  return (
+    <div
+      {...rest}
+      ref={(el) => {
+        listRef.current = el;
+        if (forwardRef)
+          (forwardRef as MutableRefObject<HTMLDivElement>).current = el!;
+        if (!init) setInit(true);
+      }}
+      onScroll={onScrollHandler.bind(this)}
+    >
+      {init && (
+        <>
+          <div
+            style={{
+              flexShrink: 0,
+              height: topPadding,
+            }}
+          />
+          {renderItems(start, end)}
+          <div
+            style={{
+              flexShrink: 0,
+              height: bottomPadding,
+            }}
+          />
+        </>
+      )}
+    </div>
+  );
+};
 
 export default React.forwardRef(
   (props: IVirtualScrollProps, ref: React.ForwardedRef<HTMLDivElement>) => (
